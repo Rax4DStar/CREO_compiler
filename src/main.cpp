@@ -1,49 +1,61 @@
 #include <exception>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <sstream>
-#include <string> 
+#include <string>
 #include <utility>
 #include <vector>
 
+#include "ASTPrinter.hpp"
 #include "Lexer.hpp"
-#include "Token.hpp"
+#include "Parser.hpp"
 
-int main(int argc, char* argv[]){
-    if(argc != 2){
-        std::cerr<<"Usage: "<<argv[0]<< "<source_file.si>\n";
+int main(int argc, char* argv[]) {
+    if (argc != 2) {
+        std::cerr
+            << "Usage: " << argv[0]
+            << " <source_file.si>\n";
         return 1;
     }
 
-    const std::string filename=argv[1];
-    std::ifstream inputFile(filename);
+    std::ifstream inputFile(argv[1], std::ios::binary);
 
-    if(!inputFile.is_open()){
-        std::cerr << "Error: Could not read '"<<filename<<"'.\n";
+    if (!inputFile) {
+        std::cerr
+            << "Error: Could not open file '"
+            << argv[1] << "'\n";
         return 1;
     }
 
     std::stringstream buffer;
-    buffer<<inputFile.rdbuf();
+    buffer << inputFile.rdbuf();
 
-    if (inputFile.bad()){
-        std::cerr << "Error: Could not read '"<<filename<<"'.\n";
+    if (inputFile.bad()) {
+        std::cerr
+            << "Error: Failed while reading file '"
+            << argv[1] << "'\n";
         return 1;
     }
 
-    try{
+    try {
         Lexer lexer(buffer.str());
-        const std::vector<Token> tokens = lexer.tokenise();
+        std::vector<Token> tokens = lexer.tokenise();
 
-        for(const Token& token : tokens){
-            std::cout << token.line << ':' << token.column << "  " << token.type << "  '" << token.lexeme << "'\n";
+        Parser parser(std::move(tokens));
+        std::unique_ptr<ProgramNode> ast =
+            parser.parseProgram();
 
-        }
+        std::cout << "Successfully parsed AST\n\n";
 
-    } catch(const std::exception& error){
-        std::cerr << "Lexer error: " << error.what() << '\n';
+        ASTPrinter printer(std::cout);
+        printer.print(*ast);
+    } catch (const std::exception& error) {
+        std::cerr
+            << "Compilation error: "
+            << error.what() << '\n';
         return 1;
     }
-    return 0;
 
+    return 0;
 }
