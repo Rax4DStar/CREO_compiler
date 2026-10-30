@@ -10,12 +10,14 @@
 #include "ASTPrinter.hpp"
 #include "Lexer.hpp"
 #include "Parser.hpp"
+#include "SemanticAnalyser.hpp"
+
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
         std::cerr
             << "Usage: " << argv[0]
-            << " <source_file.si>\n";
+            << " <source_file.creo>\n";
         return 1;
     }
 
@@ -46,7 +48,10 @@ int main(int argc, char* argv[]) {
         std::unique_ptr<ProgramNode> ast =
             parser.parseProgram();
 
-        std::cout << "Successfully parsed AST\n\n";
+        SemanticAnalyser analyser;
+        analyser.analyze(*ast);
+
+        std::cout << "Semantic analysis passed\n\n";
 
         ASTPrinter printer(std::cout);
         printer.print(*ast);
