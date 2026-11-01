@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.26)
 
 project(creo LANGUAGES CXX)
 
@@ -33,7 +33,12 @@ if(BUILD_TESTING)
         ${SOURCES}
     )
 
+    add_executable(semantic_tests
+        tests/SemanticAnalyserTests.cpp
+    )
+
     target_include_directories(parser_tests PRIVATE include)
+    target_link_libraries(semantic_tests PRIVATE creo_frontend)
 
     add_test(
         NAME parser_tests
@@ -41,8 +46,13 @@ if(BUILD_TESTING)
     )
 
     add_test(
+        NAME semantic_tests
+        COMMAND semantic_tests
+    )
+
+    add_test(
         NAME semantic_sample
         COMMAND creo_compiler
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test.creo
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-2.creo
     )
 endif()
