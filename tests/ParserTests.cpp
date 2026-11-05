@@ -187,6 +187,186 @@ void reportsMissingSemicolon() {
     }
 }
 
+void parsesDefaultVoidReturnType() {
+    auto program = parse(R"(
+        fn greet() {
+            return;
+        }
+    )");
+
+    auto& function = requireNode<FunctionDeclarationNode>(
+        *program->nodes.at(0),
+        "Expected a function declaration"
+    );
+    require(function.returnType == Type::Void, "Expected default void return type");
+
+    auto& statement = requireNode<ReturnStatementNode>(
+        *function.body->statements.at(0),
+        "Expected a return statement"
+    );
+    require(statement.expression == nullptr, "Expected a valueless return");
+}
+
+void parsesBooleanUnaryAndEqualityExpressions() {
+    auto program = parse(R"(
+        fn main(): bool {
+            return !false == true;
+        }
+    )");
+
+    auto& function = requireNode<FunctionDeclarationNode>(
+        *program->nodes.at(0),
+        "Expected a function declaration"
+    );
+    auto& returnStatement = requireNode<ReturnStatementNode>(
+        *function.body->statements.at(0),
+        "Expected a return statement"
+    );
+    auto& equality = requireNode<BinaryExpressionNode>(
+        *returnStatement.expression,
+        "Expected equality at the expression root"
+    );
+    require(equality.oper == BinaryOp::Equal, "Expected equality operator");
+
+    auto& negation = requireNode<UnaryExpressionNode>(
+        *equality.left,
+        "Expected unary negation on the left"
+    );
+    require(negation.oper == UnaryOp::Not, "Expected logical not operator");
+    require(
+        requireNode<BoolLiteralNode>(*negation.right, "Expected false literal").value == false,
+        "Expected false as the negation operand"
+    );
+}
+
+void respectsLeftAssociativity() {
+    auto program = parse(R"(
+        fn main(): int {
+            return 10 - 3 - 2;
+        }
+    )");
+
+    auto& function = requireNode<FunctionDeclarationNode>(
+        *program->nodes.at(0),
+        "Expected a function declaration"
+    );
+    auto& returnStatement = requireNode<ReturnStatementNode>(
+        *function.body->statements.at(0),
+        "Expected a return statement"
+    );
+    auto& outer = requireNode<BinaryExpressionNode>(
+        *returnStatement.expression,
+        "Expected subtraction at the expression root"
+    );
+    require(outer.oper == BinaryOp::Subtract, "Expected root subtraction");
+
+    auto& inner = requireNode<BinaryExpressionNode>(
+        *outer.left,
+        "Expected left-associated subtraction"
+    );
+    require(inner.oper == BinaryOp::Subtract, "Expected subtraction on the left");
+}
+
+void parsesComparisonAndArithmeticPrecedence() {
+    auto program = parse(R"(
+        fn main(): bool {
+            return 1 + 2 * 3 < 8;
+        }
+    )");
+
+    auto& function = requireNode<FunctionDeclarationNode>(
+        *program->nodes.at(0),
+        "Expected a function declaration"
+    );
+    auto& returnStatement = requireNode<ReturnStatementNode>(
+        *function.body->statements.at(0),
+        "Expected a return statement"
+    );
+    auto& comparison = requireNode<BinaryExpressionNode>(
+        *returnStatement.expression,
+        "Expected comparison at the expression root"
+    );
+    require(comparison.oper == BinaryOp::Less, "Expected '<' at root");
+
+    auto& addition = requireNode<BinaryExpressionNode>(
+        *comparison.left,
+        "Expected addition on the left side of comparison"
+    );
+    require(addition.oper == BinaryOp::Add, "Expected addition below comparison");
+    requireNode<BinaryExpressionNode>(
+        *addition.right,
+        "Expected multiplication to bind more tightly than addition"
+    );
+}
+
+void parsesWhileLoopAndAssignment() {
+    auto program = parse(R"(
+        fn main(): int {
+            let i: int = 0;
+            while (i < 2) {
+                i = i + 1;
+            }
+            return i;
+        }
+    )");
+
+    auto& function = requireNode<FunctionDeclarationNode>(
+        *program->nodes.at(0),
+        "Expected a function declaration"
+    );
+    auto& loop = requireNode<WhileStatementNode>(
+        *function.body->statements.at(1),
+        "Expected a while statement"
+    );
+    require(loop.body->statements.size() == 1, "Expected one loop-body statement");
+    requireNode<AssignmentNode>(
+        *loop.body->statements.at(0),
+        "Expected an assignment in the loop body"
+    );
+}
+
+void parsesZeroArgumentFunctionCall() {
+    auto program = parse(R"(
+        fn main(): int {
+            return answer();
+        }
+    )");
+
+    auto& function = requireNode<FunctionDeclarationNode>(
+        *program->nodes.at(0),
+        "Expected a function declaration"
+    );
+    auto& returnStatement = requireNode<ReturnStatementNode>(
+        *function.body->statements.at(0),
+        "Expected a return statement"
+    );
+    auto& call = requireNode<FunctionCallNode>(
+        *returnStatement.expression,
+        "Expected a function call"
+    );
+    require(call.name == "answer", "Expected call to answer");
+    require(call.arguments.empty(), "Expected no call arguments");
+}
+
+void rejectsIntegerLiteralOverflow() {
+    try {
+        (void)parse(R"(
+            fn main(): int {
+                return 999999999999999999999999999999999999;
+            }
+        )");
+    } catch (const std::runtime_error& error) {
+        require(
+            std::string(error.what()).find("Integer literal is out of range")
+                != std::string::npos,
+            "Expected an integer-overflow diagnostic"
+        );
+        return;
+    }
+
+    throw std::runtime_error("Expected integer literal overflow to fail parsing");
+}
+
 } 
 
 int main() {
@@ -197,7 +377,14 @@ int main() {
         {"respects operator precedence", respectsOperatorPrecedence},
         {"parentheses override precedence", parenthesesOverridePrecedence},
         {"parses nested function calls", parsesNestedFunctionCalls},
-        {"reports missing semicolon", reportsMissingSemicolon}
+        {"reports missing semicolon", reportsMissingSemicolon},
+        {"parses default void return type", parsesDefaultVoidReturnType},
+        {"parses boolean unary and equality expressions", parsesBooleanUnaryAndEqualityExpressions},
+        {"respects left associativity", respectsLeftAssociativity},
+        {"respects comparison and arithmetic precedence", parsesComparisonAndArithmeticPrecedence},
+        {"parses while loops and assignments", parsesWhileLoopAndAssignment},
+        {"parses zero-argument calls", parsesZeroArgumentFunctionCall},
+        {"rejects integer literal overflow", rejectsIntegerLiteralOverflow}
     };
 
     int failed = 0;
