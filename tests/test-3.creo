@@ -1,0 +1,22 @@
+fn add(a: int, b: int): int {
+    return a + b;
+}
+
+fn main(): int {
+    let limit: int = 10;
+    let sum: int = 0;
+    let i: int = 1;
+
+    while (i <= limit) {
+        sum = add(sum, i);
+        i = i + 1;
+    }
+
+    if (sum == 55) {
+        out(sum);
+    } else {
+        out(0);
+    }
+
+    return sum;
+}
