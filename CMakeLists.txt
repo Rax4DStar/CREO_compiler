@@ -37,8 +37,13 @@ if(BUILD_TESTING)
         tests/SemanticAnalyserTests.cpp
     )
 
+    add_executable(ir_generator_tests
+        tests/IRGeneratorTests.cpp
+    )
+
     target_include_directories(parser_tests PRIVATE include)
     target_link_libraries(semantic_tests PRIVATE creo_frontend)
+    target_link_libraries(ir_generator_tests PRIVATE creo_frontend)
 
     add_test(
         NAME parser_tests
@@ -51,8 +56,19 @@ if(BUILD_TESTING)
     )
 
     add_test(
+        NAME ir_generator_tests
+        COMMAND ir_generator_tests
+    )
+
+    add_test(
         NAME semantic_sample
         COMMAND creo_compiler
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-2.creo
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-2.si
+    )
+
+    add_test(
+        NAME compiler_ir_smoke_test
+        COMMAND creo_compiler
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-3.si
     )
 endif()
