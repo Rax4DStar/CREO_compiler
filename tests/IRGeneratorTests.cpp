@@ -23,13 +23,22 @@ void require(bool condition, const std::string& message) {
     }
 }
 
-IRProgram lower(const std::string& source) {
+std::unique_ptr<ProgramNode> parseSource(const std::string& source) {
     Lexer lexer(source);
     std::vector<Token> tokens = lexer.tokenise();
 
     Parser parser(std::move(tokens));
-    std::unique_ptr<ProgramNode> ast =
-        parser.parseProgram();
+    return parser.parseProgram();
+}
+
+IRProgram generateWithoutSemanticAnalysis(const std::string& source) {
+    std::unique_ptr<ProgramNode> ast = parseSource(source);
+    IRGenerator generator;
+    return generator.generate(*ast);
+}
+
+IRProgram lower(const std::string& source) {
+    std::unique_ptr<ProgramNode> ast = parseSource(source);
 
     SemanticAnalyser analyser;
     analyser.analyze(*ast);
@@ -77,6 +86,67 @@ std::size_t countOperation(
     }
 
     return count;
+}
+
+void expectGenerationError(
+    const std::string& source,
+    const std::string& expectedMessage
+) {
+    try {
+        (void)generateWithoutSemanticAnalysis(source);
+    } catch (const std::runtime_error& error) {
+        const std::string actual = error.what();
+        require(
+            actual.find(expectedMessage) != std::string::npos,
+            "expected IR error containing '" + expectedMessage +
+                "', got '" + actual + "'"
+        );
+        return;
+    }
+
+    throw std::runtime_error(
+        "expected IR generation to fail with '" + expectedMessage + "'"
+    );
+}
+
+void requireValidBranchTargets(const IRFunction& function) {
+    for (const IRBlock& block : function.blocks) {
+        for (const IRInstruction& instruction : block.instructions) {
+            if (instruction.op == IROp::Jump) {
+                const auto target = std::find_if(
+                    function.blocks.begin(),
+                    function.blocks.end(),
+                    [&](const IRBlock& candidate) {
+                        return candidate.name == instruction.target;
+                    }
+                );
+                require(
+                    target != function.blocks.end(),
+                    "jump references missing block '" + instruction.target + "'"
+                );
+            } else if (instruction.op == IROp::Branch) {
+                const auto hasBlock = [&](const std::string& name) {
+                    return std::find_if(
+                        function.blocks.begin(),
+                        function.blocks.end(),
+                        [&](const IRBlock& candidate) {
+                            return candidate.name == name;
+                        }
+                    ) != function.blocks.end();
+                };
+                require(
+                    hasBlock(instruction.trueTarget),
+                    "branch references missing true block '" +
+                        instruction.trueTarget + "'"
+                );
+                require(
+                    hasBlock(instruction.falseTarget),
+                    "branch references missing false block '" +
+                        instruction.falseTarget + "'"
+                );
+            }
+        }
+    }
 }
 
 void testArithmeticPrecedence() {
@@ -318,13 +388,247 @@ void testGeneratorCanBeReused() {
     );
 }
 
-void runTest(
+void testParametersBecomeStorageAndLoads() {
+    const IRProgram program = lower(R"(
+        fn identity(value: int): int {
+            return value;
+        }
+
+        fn main(): int {
+            return identity(7);
+        }
+    )");
+
+    const IRFunction& identity = findFunction(program, "identity");
+    require(identity.parameters.size() == 1, "expected one IR parameter");
+    require(identity.parameters[0].name == "value", "parameter name mismatch");
+    require(identity.parameters[0].type == Type::Int, "parameter type mismatch");
+    require(identity.locals.empty(), "parameter should not be a local");
+
+    const IRBlock& entry = identity.blocks.at(0);
+    require(
+        entry.instructions.size() == 2 &&
+            entry.instructions[0].op == IROp::Load &&
+            entry.instructions[0].args == std::vector<std::string>{"value"} &&
+            entry.instructions[1].op == IROp::Return &&
+            entry.instructions[1].args ==
+                std::vector<std::string>{entry.instructions[0].dst},
+        "parameter return should load the parameter and return the loaded value"
+    );
+}
+
+void testBooleanAndAllBinaryOperators() {
+    const IRProgram program = lower(R"(
+        fn main(): int {
+            let value: int = -4 + 6 - 2 * 3 / 1;
+            let less: bool = value < 1;
+            let lessEqual: bool = value <= 1;
+            let greater: bool = value > 1;
+            let greaterEqual: bool = value >= 1;
+            let equal: bool = value == 1;
+            let notEqual: bool = value != 1;
+            let negated: bool = !false;
+            return value;
+        }
+    )");
+
+    const IRFunction& main = findFunction(program, "main");
+    const std::vector<std::pair<IROp, std::string>> operations{
+        {IROp::Negate, "unary minus"},
+        {IROp::Add, "addition"},
+        {IROp::Subtract, "subtraction"},
+        {IROp::Multiply, "multiplication"},
+        {IROp::Divide, "division"},
+        {IROp::Less, "less-than comparison"},
+        {IROp::LessEqual, "less-equal comparison"},
+        {IROp::Greater, "greater-than comparison"},
+        {IROp::GreaterEqual, "greater-equal comparison"},
+        {IROp::Equal, "equality comparison"},
+        {IROp::NotEqual, "inequality comparison"},
+        {IROp::Not, "logical not"}
+    };
+
+    for (const auto& [operation, name] : operations) {
+        require(
+            countOperation(main, operation) == 1,
+            "expected exactly one instruction for " + name
+        );
+    }
+
+    const auto boolConstant = std::find_if(
+        main.blocks[0].instructions.begin(),
+        main.blocks[0].instructions.end(),
+        [](const IRInstruction& instruction) {
+            return instruction.op == IROp::ConstBool;
+        }
+    );
+    require(boolConstant != main.blocks[0].instructions.end(), "missing bool constant");
+    require(!boolConstant->boolValue, "false literal should lower to false");
+    require(boolConstant->type == Type::Bool, "bool constant should have bool type");
+}
+
+void testIfWithoutElseHasFalsePathJoin() {
+    const IRProgram program = lower(R"(
+        fn main(): int {
+            if (true) {
+                out(1);
+            }
+            return 0;
+        }
+    )");
+
+    const IRFunction& main = findFunction(program, "main");
+    const IRInstruction* branch = nullptr;
+    for (const IRBlock& block : main.blocks) {
+        for (const IRInstruction& instruction : block.instructions) {
+            if (instruction.op == IROp::Branch) {
+                branch = &instruction;
+            }
+        }
+    }
+
+    require(branch != nullptr, "if statement should emit a branch");
+    require(
+        branch->falseTarget == "if_end1",
+        "if without else should use its join block as the false target"
+    );
+    require(
+        std::any_of(
+            main.blocks.begin(), main.blocks.end(),
+            [&](const IRBlock& block) {
+                return block.name == branch->falseTarget;
+            }
+        ),
+        "if false target should be materialized as a block"
+    );
+}
+
+void testNestedControlFlowTargetsExist() {
+    const IRProgram program = lower(R"(
+        fn main(): int {
+            let i: int = 0;
+            while (i < 2) {
+                if (i == 1) {
+                    out(i);
+                } else {
+                    i = i + 1;
+                }
+            }
+            return i;
+        }
+    )");
+
+    const IRFunction& main = findFunction(program, "main");
+    requireValidBranchTargets(main);
+    require(
+        countOperation(main, IROp::Branch) == 2,
+        "nested while and if should emit two branches"
+    );
+}
+
+void testVoidFunctionGetsImplicitReturn() {
+    const IRProgram program = lower(R"(
+        fn helper() {
+            out(1);
+        }
+        fn main(): int {
+            return 0;
+        }
+    )");
+
+    const IRFunction& helper = findFunction(program, "helper");
+    const IRBlock& entry = helper.blocks.at(0);
+    require(
+        entry.instructions.back().op == IROp::Return,
+        "void function should end with an implicit return"
+    );
+    require(
+        entry.instructions.back().type == Type::Void &&
+            entry.instructions.back().args.empty(),
+        "implicit void return should carry no value"
+    );
+}
+
+void testExplicitReturnStopsUnreachableInstructions() {
+    const IRProgram program = lower(R"(
+        fn main(): int {
+            return 0;
+            out(1);
+        }
+    )");
+
+    const IRFunction& main = findFunction(program, "main");
+    require(
+        countOperation(main, IROp::Call) == 0,
+        "instructions after return should not be emitted"
+    );
+    require(
+        main.blocks.at(0).instructions.back().op == IROp::Return,
+        "entry block should end at the explicit return"
+    );
+}
+
+void testSiblingScopesUseDistinctStorageNames() {
+    const IRProgram program = lower(R"(
+        fn main(): int {
+            if (true) { let item: int = 1; out(item); }
+            if (false) { let item: int = 2; out(item); }
+            return 0;
+        }
+    )");
+
+    const IRFunction& main = findFunction(program, "main");
+    require(main.locals.size() == 2, "expected a local for each sibling scope");
+    require(main.locals[0].name == "item", "first local should retain its name");
+    require(main.locals[1].name == "item$1", "second local name should be unique");
+}
+
+void testGeneratorRejectsMissingNonVoidReturn() {
+    expectGenerationError(R"(
+        fn main(): int {
+            let value: int = 1;
+        }
+    )", "reaches the end without returning");
+}
+
+void testGeneratorRejectsUnknownFunction() {
+    expectGenerationError(R"(
+        fn main(): int {
+            return missing();
+        }
+    )", "unknown function 'missing'");
+}
+
+void testGeneratorRejectsUnknownVariable() {
+    expectGenerationError(R"(
+        fn main(): int {
+            return missing;
+        }
+    )", "unknown variable 'missing'");
+}
+
+void testGeneratorRejectsDuplicateFunctions() {
+    expectGenerationError(R"(
+        fn main(): int { return 0; }
+        fn main(): int { return 1; }
+    )", "duplicate function 'main'");
+}
+
+void testGeneratorRejectsGlobalStatements() {
+    expectGenerationError(R"(
+        let value: int = 1;
+        fn main(): int { return 0; }
+    )", "only functions are allowed at global scope");
+}
+
+bool runTest(
     const std::string& name,
     const std::function<void()>& test
 ) {
     try {
         test();
         std::cout << "[PASS] " << name << '\n';
+        return true;
     }
     catch (const std::exception& error) {
         std::cerr
@@ -332,47 +636,43 @@ void runTest(
             << ": " << error.what()
             << '\n';
 
-        throw;
+        return false;
     }
 }
 
 } 
 int main() {
-    try {
-        runTest(
-            "arithmetic precedence",
-            testArithmeticPrecedence
-        );
+    using Test = std::pair<std::string, std::function<void()>>;
+    const std::vector<Test> tests{
+        {"arithmetic precedence", testArithmeticPrecedence},
+        {"while control flow", testWhileControlFlow},
+        {"value and void calls", testValueAndVoidCalls},
+        {"variable shadowing", testVariableShadowingUsesDistinctStorage},
+        {"block terminators", testEveryBlockEndsWithATerminator},
+        {"generator reuse", testGeneratorCanBeReused},
+        {"parameters and loads", testParametersBecomeStorageAndLoads},
+        {"boolean and binary operators", testBooleanAndAllBinaryOperators},
+        {"if without else", testIfWithoutElseHasFalsePathJoin},
+        {"nested branch targets", testNestedControlFlowTargetsExist},
+        {"implicit void return", testVoidFunctionGetsImplicitReturn},
+        {"unreachable instructions after return", testExplicitReturnStopsUnreachableInstructions},
+        {"sibling scope storage", testSiblingScopesUseDistinctStorageNames},
+        {"missing non-void return", testGeneratorRejectsMissingNonVoidReturn},
+        {"unknown function", testGeneratorRejectsUnknownFunction},
+        {"unknown variable", testGeneratorRejectsUnknownVariable},
+        {"duplicate functions", testGeneratorRejectsDuplicateFunctions},
+        {"global statements", testGeneratorRejectsGlobalStatements}
+    };
 
-        runTest(
-            "while control flow",
-            testWhileControlFlow
-        );
-
-        runTest(
-            "value and void calls",
-            testValueAndVoidCalls
-        );
-
-        runTest(
-            "variable shadowing",
-            testVariableShadowingUsesDistinctStorage
-        );
-
-        runTest(
-            "block terminators",
-            testEveryBlockEndsWithATerminator
-        );
-
-        runTest(
-            "generator reuse",
-            testGeneratorCanBeReused
-        );
-    }
-    catch (...) {
-        return 1;
+    std::size_t passed = 0;
+    for (const auto& [name, test] : tests) {
+        if (runTest(name, test)) {
+            ++passed;
+        }
     }
 
-    std::cout << "6/6 IR generator tests passed\n";
-    return 0;
+    std::cout
+        << passed << '/' << tests.size()
+        << " IR generator tests passed\n";
+    return passed == tests.size() ? 0 : 1;
 }

@@ -63,12 +63,12 @@ if(BUILD_TESTING)
     add_test(
         NAME semantic_sample
         COMMAND creo_compiler
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-2.si
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-2.creo
     )
 
     add_test(
         NAME compiler_ir_smoke_test
         COMMAND creo_compiler
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-3.si
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test-3.creo
     )
 endif()
