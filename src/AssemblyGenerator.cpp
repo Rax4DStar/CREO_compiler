@@ -153,3 +153,92 @@ bool AssemblyGenerator::isSupported(
             return false;
     }
 }
+void AssemblyGenerator::emitProgram(
+    const IRProgram& program,
+    std::ostream& output
+) {
+    output << "global _start\n\n";
+    output << "section .text\n\n";
+
+    output << "_start:\n";
+    output << "    call si_main\n";
+    output << "    mov edi, eax\n";
+    output << "    mov eax, 60\n";
+    output << "    syscall\n\n";
+
+    for (const IRFunction& function : program.functions) {
+        emitFunction(function, output);
+    }
+}
+std::string AssemblyGenerator::functionLabel(
+    const std::string& name
+) {
+    return "creo_" + name;
+}
+std::string AssemblyGenerator::blockLabel(
+    const std::string& functionName,
+    const std::string& blockName
+) {
+    return ".L_" + functionName + "_" + blockName;
+}
+void AssemblyGenerator::allocateStackSlots(
+    const IRFunction& function
+) {
+    _context = FunctionContext{};
+    _context.returnLabel =
+        ".L_" + function.name + "_return";
+
+    for (const IRLocal& local : function.locals) {
+        allocateSlot(local.name);
+    }
+
+    for (const IRBlock& block : function.blocks) {
+        for (const IRInstruction& instruction : block.instructions) {
+            if (!instruction.dst.empty()) {
+                allocateSlot(instruction.dst);
+            }
+        }
+    }
+}
+void AssemblyGenerator::allocateSlot(
+    const std::string& name
+) {
+    if (_context.stackSlots.contains(name)) {
+        return;
+    }
+
+    _context.nextOffset += 4;
+    _context.stackSlots.emplace(
+        name,
+        _context.nextOffset
+    );
+}
+int AssemblyGenerator::slotOffset(
+    const std::string& name
+) const {
+    const auto found = _context.stackSlots.find(name);
+
+    if (found == _context.stackSlots.end()) {
+        throw std::runtime_error(
+            "Assembly error: no stack slot for IR value '" +
+            name + "'"
+        );
+    }
+    return found->second;
+}
+int AssemblyGenerator::stackSize() const noexcept {
+    constexpr int alignment = 16;
+    const int size = _context.nextOffset;
+
+    return (
+        (size + alignment - 1) / alignment
+    ) * alignment;
+}
+std::string AssemblyGenerator::stackOperand(
+    const std::string& name
+) const {
+    return
+        "dword [rbp - " +
+        std::to_string(slotOffset(name)) +
+        "]";
+}
