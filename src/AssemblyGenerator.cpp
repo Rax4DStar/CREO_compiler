@@ -242,3 +242,187 @@ std::string AssemblyGenerator::stackOperand(
         std::to_string(slotOffset(name)) +
         "]";
 }
+void AssemblyGenerator::emitInstruction(
+    const IRInstruction& instruction,
+    std::ostream& output
+) {
+    switch (instruction.op) {
+        case IROp::ConstInt:
+        case IROp::ConstBool:
+            emitConstant(instruction, output);
+            return;
+
+        case IROp::Load:
+            emitLoad(instruction, output);
+            return;
+
+        case IROp::Store:
+            emitStore(instruction, output);
+            return;
+
+        case IROp::Add:
+        case IROp::Subtract:
+        case IROp::Multiply:
+        case IROp::Divide:
+            emitBinary(instruction, output);
+            return;
+
+        case IROp::Negate:
+        case IROp::Not:
+            emitUnary(instruction, output);
+            return;
+
+        case IROp::Return:
+            emitReturn(instruction, output);
+            return;
+
+        default:
+            throw std::runtime_error(
+                "Assembly internal error: unsupported "
+                "instruction reached emission"
+            );
+    }
+}
+
+void AssemblyGenerator::emitConstant(
+    const IRInstruction& instruction,
+    std::ostream& output
+) {
+    const int value =
+        instruction.op == IROp::ConstBool
+            ? (instruction.boolValue ? 1 : 0)
+            : instruction.intValue;
+
+    output
+        << "    mov "
+        << stackOperand(instruction.dst)
+        << ", "
+        << value
+        << '\n';
+}
+void AssemblyGenerator::emitLoad(
+    const IRInstruction& instruction,
+    std::ostream& output
+) {
+    output
+        << "    mov eax, "
+        << stackOperand(instruction.args[0])
+        << '\n'
+        << "    mov "
+        << stackOperand(instruction.dst)
+        << ", eax\n";
+}
+void AssemblyGenerator::emitStore(
+    const IRInstruction& instruction,
+    std::ostream& output
+) {
+    output
+        << "    mov eax, "
+        << stackOperand(instruction.args[0])
+        << '\n'
+        << "    mov "
+        << stackOperand(instruction.args[1])
+        << ", eax\n";
+}
+void AssemblyGenerator::emitBinary(
+    const IRInstruction& instruction,
+    std::ostream& output
+) {
+    output
+        << "    mov eax, "
+        << stackOperand(instruction.args[0])
+        << '\n';
+
+    const std::string right =
+        stackOperand(instruction.args[1]);
+
+    switch (instruction.op) {
+        case IROp::Add:
+            output
+                << "    add eax, "
+                << right
+                << '\n';
+            break;
+
+        case IROp::Subtract:
+            output
+                << "    sub eax, "
+                << right
+                << '\n';
+            break;
+
+        case IROp::Multiply:
+            output
+                << "    imul eax, "
+                << right
+                << '\n';
+            break;
+
+        case IROp::Divide:
+            output << "    cdq\n";
+            output
+                << "    idiv "
+                << right
+                << '\n';
+            break;
+
+        default:
+            throw std::runtime_error(
+                "Assembly internal error: invalid "
+                "binary instruction"
+            );
+    }
+
+    output
+        << "    mov "
+        << stackOperand(instruction.dst)
+        << ", eax\n";
+}
+void AssemblyGenerator::emitUnary(
+    const IRInstruction& instruction,
+    std::ostream& output
+) {
+    output
+        << "    mov eax, "
+        << stackOperand(instruction.args[0])
+        << '\n';
+
+    switch (instruction.op) {
+        case IROp::Negate:
+            output << "    neg eax\n";
+            break;
+
+        case IROp::Not:
+            output << "    cmp eax, 0\n";
+            output << "    sete al\n";
+            output << "    movzx eax, al\n";
+            break;
+
+        default:
+            throw std::runtime_error(
+                "Assembly internal error: invalid "
+                "unary instruction"
+            );
+    }
+
+    output
+        << "    mov "
+        << stackOperand(instruction.dst)
+        << ", eax\n";
+}
+void AssemblyGenerator::emitReturn(
+    const IRInstruction& instruction,
+    std::ostream& output
+) {
+    if (!instruction.args.empty()) {
+        output
+            << "    mov eax, "
+            << stackOperand(instruction.args[0])
+            << '\n';
+    }
+
+    output
+        << "    jmp "
+        << _context.returnLabel
+        << '\n';
+}
